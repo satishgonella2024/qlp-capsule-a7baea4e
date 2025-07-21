@@ -1,0 +1,98 @@
+import argparse
+import os
+import sys
+import re
+import datetime
+from typing import List, Optional
+
+NOTES_DIR = os.path.expanduser('~/.mdnotes')
+
+class Note:
+    def __init__(self, title: str, tags: List[str], content: str, created_at: Optional[datetime.datetime] = None):
+        self.title = title.strip()
+        self.tags = [tag.strip().lower() for tag in tags]
+        self.content = content.strip()
+        self.created_at = created_at or datetime.datetime.now()
+
+    @property
+    def filename(self) -> str:
+        safe_title = re.sub(r'[^a-zA-Z0-9_-]', '_', self.title)
+        timestamp = self.created_at.strftime('%Y%m%d%H%M%S')
+        return f"{timestamp}_{safe_title}.md"
+
+    def serialize(self) -> str:
+        tags_line = f"Tags: {', '.join(self.tags)}" if self.tags else "Tags:"
+        created_line = f"Created: {self.created_at.isoformat()}"
+        return f"# {self.title}\n{tags_line}\n{created_line}\n\n{self.content}\n"
+
+    @staticmethod
+    def deserialize(filepath: str) -> 'Note':
+        with open(filepath, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        title_line = lines[0].strip()
+        tags_line = lines[1].strip()
+        created_line = lines[2].strip()
+        title = title_line[2:].strip()
+        tags = tags_line[5:].strip().split(', ')
+        created_at = datetime.datetime.fromisoformat(created_line[8:].strip())
+        content = ''.join(lines[4:]).strip()
+        return Note(title, tags, content, created_at)
+
+def ensure_notes_dir():
+    os.makedirs(NOTES_DIR, exist_ok=True)
+
+def create_note(title: str, tags: List[str], content: str):
+    note = Note(title, tags, content)
+    filepath = os.path.join(NOTES_DIR, note.filename)
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write(note.serialize())
+    print(f"Note '{title}' created successfully.")
+
+def list_notes(tag_filter: Optional[str] = None):
+    files = [f for f in os.listdir(NOTES_DIR) if f.endswith('.md')]
+    notes = []
+    for filename in files:
+        note = Note.deserialize(os.path.join(NOTES_DIR, filename))
+        if tag_filter is None or tag_filter in note.tags:
+            notes.append(note)
+    for note in notes:
+        print(f"- {note.title} (Tags: {', '.join(note.tags)})")
+
+def search_notes(query: str):
+    files = [f for f in os.listdir(NOTES_DIR) if f.endswith('.md')]
+    matched_notes = []
+    for filename in files:
+        note = Note.deserialize(os.path.join(NOTES_DIR, filename))
+        if query in note.title or query in note.content or any(query in tag for tag in note.tags):
+            matched_notes.append(note)
+    for note in matched_notes:
+        print(f"- {note.title} (Tags: {', '.join(note.tags)})")
+
+def main():
+    parser = argparse.ArgumentParser(description='Markdown Notes CLI Tool')
+    subparsers = parser.add_subparsers(dest='command', required=True)
+
+    create_parser = subparsers.add_parser('create', help='Create a new markdown note')
+    create_parser.add_argument('title', help='Title of the note')
+    create_parser.add_argument('--tags', nargs='+', default=[], help='Tags for the note')
+    create_parser.add_argument('content', help='Content of the note')
+
+    list_parser = subparsers.add_parser('list', help='List all notes')
+    list_parser.add_argument('--tag', help='Filter notes by tag')
+
+    search_parser = subparsers.add_parser('search', help='Search notes by query')
+    search_parser.add_argument('query', help='Search query string')
+
+    args = parser.parse_args()
+
+    ensure_notes_dir()
+
+    if args.command == 'create':
+        create_note(args.title, args.tags, args.content)
+    elif args.command == 'list':
+        list_notes(args.tag)
+    elif args.command == 'search':
+        search_notes(args.query)
+
+if __name__ == '__main__':
+    main()
