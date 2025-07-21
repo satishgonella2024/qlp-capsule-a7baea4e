@@ -1,0 +1,155 @@
+import argparse
+import sys
+import os
+import datetime
+import re
+from typing import List, Optional
+
+NOTES_DIR = os.path.expanduser('~/.md_notes')
+
+class Note:
+    def __init__(self, filename: str, title: str, tags: List[str], created_at: datetime.datetime):
+        self.filename = filename
+        self.title = title
+        self.tags = tags
+        self.created_at = created_at
+
+    @staticmethod
+    def parse_metadata(lines: List[str]) -> (str, List[str]):
+        title = ''
+        tags = []
+        for line in lines:
+            if line.startswith('# '):
+                title = line[2:].strip()
+            elif line.lower().startswith('tags:'):
+                tag_line = line[5:].strip()
+                tags = [tag.strip() for tag in tag_line.split(',') if tag.strip()]
+            if title and tags:
+                break
+        return title, tags
+
+    @classmethod
+    def from_file(cls, filepath: str):
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                lines = [next(f) for _ in range(10)]  # read first 10 lines for metadata
+            title, tags = cls.parse_metadata(lines)
+            created_at = datetime.datetime.fromtimestamp(os.path.getctime(filepath))
+            return cls(filename=os.path.basename(filepath), title=title, tags=tags, created_at=created_at)
+        except (IOError, StopIteration):
+            raise ValueError(f'Failed to read or parse note file: {filepath}')
+
+def ensure_notes_dir():
+    if not os.path.exists(NOTES_DIR):
+        os.makedirs(NOTES_DIR, exist_ok=True)
+
+def sanitize_filename(name: str) -> str:
+    return re.sub(r'[^a-zA-Z0-9_-]', '_', name)
+
+def create_note(title: str, tags: Optional[List[str]]):
+    ensure_notes_dir()
+    if not title.strip():
+        raise ValueError('Title cannot be empty')
+    filename_base = sanitize_filename(title.lower().replace(' ', '_'))
+    filename = filename_base + '.md'
+    filepath = os.path.join(NOTES_DIR, filename)
+    counter = 1
+    while os.path.exists(filepath):
+        filename = f'{filename_base}_{counter}.md'
+        filepath = os.path.join(NOTES_DIR, filename)
+        counter += 1
+
+    tags_line = ''
+    if tags:
+        clean_tags = [sanitize_filename(t.lower()) for t in tags if t.strip()]
+        tags_line = 'Tags: ' + ', '.join(clean_tags) + '\n'
+
+    content = f"# {title}\n{tags_line}\n"
+
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(content)
+    except IOError as e:
+        raise IOError(f'Failed to create note file: {e}')
+
+    print(f'Note created: {filename}')
+
+def list_notes(tag_filter: Optional[str] = None):
+    ensure_notes_dir()
+    notes = []
+    for fname in os.listdir(NOTES_DIR):
+        if fname.endswith('.md'):
+            try:
+                note = Note.from_file(os.path.join(NOTES_DIR, fname))
+                if tag_filter:
+                    if tag_filter.lower() in (t.lower() for t in note.tags):
+                        notes.append(note)
+                else:
+                    notes.append(note)
+            except ValueError:
+                continue
+    if not notes:
+        print('No notes found.')
+        return
+    notes.sort(key=lambda n: n.created_at, reverse=True)
+    for note in notes:
+        tags_str = ', '.join(note.tags) if note.tags else 'No tags'
+        print(f'{note.filename} | Title: {note.title} | Tags: {tags_str} | Created: {note.created_at.strftime("%Y-%m-%d %H:%M")}')
+
+def search_notes(query: str):
+    ensure_notes_dir()
+    if not query.strip():
+        print('Search query cannot be empty.')
+        return
+    query_lower = query.lower()
+    matched = []
+    for fname in os.listdir(NOTES_DIR):
+        if fname.endswith('.md'):
+            path = os.path.join(NOTES_DIR, fname)
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    content = f.read().lower()
+                if query_lower in content:
+                    note = Note.from_file(path)
+                    matched.append(note)
+            except IOError:
+                continue
+    if not matched:
+        print('No matching notes found.')
+        return
+    matched.sort(key=lambda n: n.created_at, reverse=True)
+    for note in matched:
+        tags_str = ', '.join(note.tags) if note.tags else 'No tags'
+        print(f'{note.filename} | Title: {note.title} | Tags: {tags_str} | Created: {note.created_at.strftime("%Y-%m-%d %H:%M")}')
+
+def main():
+    parser = argparse.ArgumentParser(description='Markdown Notes Manager CLI')
+    subparsers = parser.add_subparsers(dest='command', required=True)
+
+    create_parser = subparsers.add_parser('create', help='Create a new note')
+    create_parser.add_argument('-t', '--title', type=str, required=True, help='Title of the note')
+    create_parser.add_argument('--tags', type=str, nargs='*', help='Tags for the note')
+
+    list_parser = subparsers.add_parser('list', help='List notes')
+    list_parser.add_argument('--tag', type=str, help='Filter notes by tag')
+
+    search_parser = subparsers.add_parser('search', help='Search notes by text')
+    search_parser.add_argument('query', type=str, help='Search query string')
+
+    args = parser.parse_args()
+
+    try:
+        if args.command == 'create':
+            create_note(args.title, args.tags)
+        elif args.command == 'list':
+            list_notes(args.tag)
+        elif args.command == 'search':
+            search_notes(args.query)
+        else:
+            parser.print_help()
+    except Exception as e:
+        print(f'Error: {e}', file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()
