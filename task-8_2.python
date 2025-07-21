@@ -1,0 +1,74 @@
+import argparse
+import os
+import sys
+import re
+import shutil
+from typing import List, Optional
+from datetime import datetime
+
+NOTES_DIR = os.path.expanduser('~/.mdnotes')
+
+class NoteManagerError(Exception):
+    pass
+
+class NoteManager:
+    def __init__(self, notes_dir: str = NOTES_DIR):
+        self.notes_dir = notes_dir
+        os.makedirs(self.notes_dir, exist_ok=True)
+
+    def _sanitize_filename(self, title: str) -> str:
+        sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', title.strip())
+        if not sanitized:
+            raise NoteManagerError('Note title must contain at least one valid character')
+        return sanitized
+
+    def _note_path(self, filename: str) -> str:
+        return os.path.join(self.notes_dir, filename + '.md')
+
+    def create_note(self, title: str, tags: Optional[List[str]] = None, content: Optional[str] = None) -> str:
+        filename = self._sanitize_filename(title)
+        path = self._note_path(filename)
+        if os.path.exists(path):
+            raise NoteManagerError(f'Note "{title}" already exists.')
+
+        tags_line = ''
+        if tags:
+            tags_line = 'Tags: ' + ', '.join(tag.strip() for tag in tags if tag.strip())
+
+        header = f'# {title}\n'
+        if tags_line:
+            header += tags_line + '\n'
+        header += '\n'
+
+        content = content or ''
+
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(header + content)
+        except OSError as e:
+            raise NoteManagerError(f'Failed to create note: {e}')
+
+        return path
+
+    # Implement other functions like list_notes, search_notes, add_tags, remove_note, show_note
+
+def main():
+    parser = argparse.ArgumentParser(description='Markdown Notes CLI Tool')
+    subparsers = parser.add_subparsers(dest='command', required=True)
+
+    # Add subparsers for different commands
+
+    args = parser.parse_args()
+
+    manager = NoteManager()
+
+    try:
+        # Handle different commands based on args.command
+        pass
+
+    except NoteManagerError as e:
+        print(f'Error: {e}', file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()
