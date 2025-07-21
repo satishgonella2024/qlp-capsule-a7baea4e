@@ -1,0 +1,230 @@
+import argparse
+import os
+import sys
+import re
+import shutil
+from typing import List, Optional
+from datetime import datetime
+
+NOTES_DIR = os.path.expanduser('~/.mdnotes')
+
+class NoteManagerError(Exception):
+    pass
+
+class NoteManager:
+    def __init__(self, notes_dir: str = NOTES_DIR):
+        self.notes_dir = notes_dir
+        os.makedirs(self.notes_dir, exist_ok=True)
+
+    def _sanitize_filename(self, title: str) -> str:
+        sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', title.strip())
+        if not sanitized:
+            raise NoteManagerError('Note title must contain at least one valid character')
+        return sanitized
+
+    def _note_path(self, filename: str) -> str:
+        return os.path.join(self.notes_dir, filename + '.md')
+
+    def create_note(self, title: str, tags: Optional[List[str]] = None, content: Optional[str] = None) -> str:
+        filename = self._sanitize_filename(title)
+        path = self._note_path(filename)
+        if os.path.exists(path):
+            raise NoteManagerError(f'Note "{title}" already exists.')
+
+        tags_line = ''
+        if tags:
+            tags_line = 'Tags: ' + ', '.join(tag.strip() for tag in tags if tag.strip())
+
+        header = f'# {title}\n'
+        if tags_line:
+            header += tags_line + '\n'
+        header += '\n'
+
+        content = content or ''
+
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(header + content)
+        except OSError as e:
+            raise NoteManagerError(f'Failed to create note: {e}')
+
+        return path
+
+    def list_notes(self, tag_filter: Optional[str] = None) -> List[str]:
+        notes = []
+        for filename in os.listdir(self.notes_dir):
+            if filename.endswith('.md'):
+                path = os.path.join(self.notes_dir, filename)
+                if tag_filter:
+                    if self._note_has_tag(path, tag_filter):
+                        notes.append(filename[:-3])
+                else:
+                    notes.append(filename[:-3])
+        return sorted(notes)
+
+    def _note_has_tag(self, path: str, tag: str) -> bool:
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.lower().startswith('tags:'):
+                        tags_line = line[5:].strip()
+                        tags = [t.strip().lower() for t in tags_line.split(',')]
+                        return tag.lower() in tags
+                    if line.strip() == '':
+                        break  # tags line should be in the header
+        except OSError:
+            pass
+        return False
+
+    def search_notes(self, query: str) -> List[str]:
+        query_lower = query.lower()
+        results = []
+        for filename in os.listdir(self.notes_dir):
+            if filename.endswith('.md'):
+                path = os.path.join(self.notes_dir, filename)
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        content = f.read().lower()
+                        if query_lower in content:
+                            results.append(filename[:-3])
+                except OSError:
+                    continue
+        return sorted(results)
+
+    def add_tags(self, title: str, tags: List[str]) -> None:
+        filename = self._sanitize_filename(title)
+        path = self._note_path(filename)
+        if not os.path.exists(path):
+            raise NoteManagerError(f'Note "{title}" does not exist.')
+
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+
+            tags_line_index = None
+            current_tags = []
+            for i, line in enumerate(lines):
+                if line.lower().startswith('tags:'):
+                    tags_line_index = i
+                    current_tags = [t.strip() for t in line[5:].split(',') if t.strip()]
+                    break
+                if line.strip() == '':
+                    break
+
+            new_tags = set(current_tags)
+            for tag in tags:
+                if tag.strip():
+                    new_tags.add(tag.strip())
+
+            new_tags_line = 'Tags: ' + ', '.join(sorted(new_tags)) + '\n'
+
+            if tags_line_index is not None:
+                lines[tags_line_index] = new_tags_line
+            else:
+                # Insert tags line after title line
+                if len(lines) > 0 and lines[0].startswith('#'):
+                    lines.insert(1, new_tags_line)
+                else:
+                    lines.insert(0, new_tags_line)
+
+            with open(path, 'w', encoding='utf-8') as f:
+                f.writelines(lines)
+
+        except OSError as e:
+            raise NoteManagerError(f'Failed to add tags: {e}')
+
+    def remove_note(self, title: str) -> None:
+        filename = self._sanitize_filename(title)
+        path = self._note_path(filename)
+        if not os.path.exists(path):
+            raise NoteManagerError(f'Note "{title}" does not exist.')
+        try:
+            os.remove(path)
+        except OSError as e:
+            raise NoteManagerError(f'Failed to remove note: {e}')
+
+    def show_note(self, title: str) -> str:
+        filename = self._sanitize_filename(title)
+        path = self._note_path(filename)
+        if not os.path.exists(path):
+            raise NoteManagerError(f'Note "{title}" does not exist.')
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except OSError as e:
+            raise NoteManagerError(f'Failed to read note: {e}')
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Markdown Notes CLI Tool')
+    subparsers = parser.add_subparsers(dest='command', required=True)
+
+    # create
+    create_parser = subparsers.add_parser('create', help='Create a new note')
+    create_parser.add_argument('title', type=str, help='Title of the note')
+    create_parser.add_argument('--tags', type=str, nargs='*', help='Tags for the note')
+    create_parser.add_argument('--content', type=str, help='Initial content of the note')
+
+    # list
+    list_parser = subparsers.add_parser('list', help='List notes')
+    list_parser.add_argument('--tag', type=str, help='Filter notes by tag')
+
+    # search
+    search_parser = subparsers.add_parser('search', help='Search notes by text')
+    search_parser.add_argument('query', type=str, help='Search query')
+
+    # add-tags
+    add_tags_parser = subparsers.add_parser('add-tags', help='Add tags to a note')
+    add_tags_parser.add_argument('title', type=str, help='Title of the note')
+    add_tags_parser.add_argument('tags', type=str, nargs='+', help='Tags to add')
+
+    # remove
+    remove_parser = subparsers.add_parser('remove', help='Remove a note')
+    remove_parser.add_argument('title', type=str, help='Title of the note')
+
+    # show
+    show_parser = subparsers.add_parser('show', help='Show note content')
+    show_parser.add_argument('title', type=str, help='Title of the note')
+
+    args = parser.parse_args()
+
+    manager = NoteManager()
+
+    try:
+        if args.command == 'create':
+            path = manager.create_note(args.title, tags=args.tags, content=args.content)
+            print(f'Note created: {path}')
+
+        elif args.command == 'list':
+            notes = manager.list_notes(tag_filter=args.tag)
+            if notes:
+                print('\n'.join(notes))
+            else:
+                print('No notes found.')
+
+        elif args.command == 'search':
+            results = manager.search_notes(args.query)
+            if results:
+                print('\n'.join(results))
+            else:
+                print('No notes matched the query.')
+
+        elif args.command == 'add-tags':
+            manager.add_tags(args.title, args.tags)
+            print(f'Tags added to note "{args.title}".')
+
+        elif args.command == 'remove':
+            manager.remove_note(args.title)
+            print(f'Note "{args.title}" removed.')
+
+        elif args.command == 'show':
+            content = manager.show_note(args.title)
+            print(content)
+
+    except NoteManagerError as e:
+        print(f'Error: {e}', file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
