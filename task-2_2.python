@@ -1,0 +1,212 @@
+import argparse
+import os
+import re
+import sys
+from datetime import datetime
+from typing import List, Optional
+
+NOTES_DIR = os.path.expanduser('~/.md_notes')
+
+
+class NoteManager:
+    def __init__(self, notes_dir: str = NOTES_DIR):
+        self.notes_dir = notes_dir
+        os.makedirs(self.notes_dir, exist_ok=True)
+
+    def _sanitize_filename(self, title: str) -> str:
+        sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', title.strip())
+        return sanitized[:50]  # limit length
+
+    def _note_path(self, filename: str) -> str:
+        return os.path.join(self.notes_dir, filename + '.md')
+
+    def create_note(self, title: str, tags: Optional[List[str]] = None, content: Optional[str] = None) -> str:
+        if not title or not title.strip():
+            raise ValueError('Title cannot be empty')
+        filename = self._sanitize_filename(title)
+        path = self._note_path(filename)
+        if os.path.exists(path):
+            raise FileExistsError(f'Note with title "{title}" already exists.')
+        tags_line = ''
+        if tags:
+            tags_line = 'Tags: ' + ', '.join(tag.strip() for tag in tags if tag.strip()) + '\n\n'
+        content = content or ''
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(f'# {title}\n')
+            f.write(tags_line)
+            f.write(content)
+        return path
+
+    def list_notes(self, tag_filter: Optional[str] = None) -> List[str]:
+        notes = []
+        for filename in os.listdir(self.notes_dir):
+            if filename.endswith('.md'):
+                path = os.path.join(self.notes_dir, filename)
+                if tag_filter:
+                    if self._note_has_tag(path, tag_filter):
+                        notes.append(filename[:-3])
+                else:
+                    notes.append(filename[:-3])
+        return sorted(notes)
+
+    def _note_has_tag(self, path: str, tag: str) -> bool:
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.lower().startswith('tags:'):
+                        tags_line = line[5:].strip().lower()
+                        tags = [t.strip() for t in tags_line.split(',')]
+                        return tag.lower() in tags
+        except Exception:
+            return False
+        return False
+
+    def search_notes(self, query: str) -> List[str]:
+        if not query:
+            return []
+        query_lower = query.lower()
+        matches = []
+        for filename in os.listdir(self.notes_dir):
+            if filename.endswith('.md'):
+                path = os.path.join(self.notes_dir, filename)
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        content = f.read().lower()
+                        if query_lower in content:
+                            matches.append(filename[:-3])
+                except Exception:
+                    continue
+        return sorted(matches)
+
+    def add_tags(self, title: str, tags: List[str]) -> None:
+        if not tags:
+            raise ValueError('No tags provided to add')
+        filename = self._sanitize_filename(title)
+        path = self._note_path(filename)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f'Note "{title}" does not exist.')
+
+        with open(path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+        tag_line_index = None
+        for i, line in enumerate(lines):
+            if line.lower().startswith('tags:'):
+                tag_line_index = i
+                break
+
+        existing_tags = set()
+        if tag_line_index is not None:
+            existing_tags = set(t.strip() for t in lines[tag_line_index][5:].split(',') if t.strip())
+
+        new_tags = set(t.strip() for t in tags if t.strip())
+        combined_tags = sorted(existing_tags.union(new_tags))
+
+        tag_line = 'Tags: ' + ', '.join(combined_tags) + '\n'
+
+        if tag_line_index is not None:
+            lines[tag_line_index] = tag_line
+        else:
+            if len(lines) > 0 and lines[0].startswith('#'):
+                lines.insert(1, tag_line + '\n')
+            else:
+                lines.insert(0, tag_line + '\n')
+
+        with open(path, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
+
+    def remove_tags(self, title: str, tags: List[str]) -> None:
+        if not tags:
+            raise ValueError('No tags provided to remove')
+        filename = self._sanitize_filename(title)
+        path = self._note_path(filename)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f'Note "{title}" does not exist.')
+
+        with open(path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+        tag_line_index = None
+        for i, line in enumerate(lines):
+            if line.lower().startswith('tags:'):
+                tag_line_index = i
+                break
+
+        if tag_line_index is None:
+            return
+
+        existing_tags = set(t.strip() for t in lines[tag_line_index][5:].split(',') if t.strip())
+        remove_tags = set(t.strip() for t in tags if t.strip())
+
+        updated_tags = sorted(existing_tags - remove_tags)
+
+        if updated_tags:
+            lines[tag_line_index] = 'Tags: ' + ', '.join(updated_tags) + '\n'
+        else:
+            lines.pop(tag_line_index)
+
+        with open(path, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Markdown Notes CLI Tool')
+    subparsers = parser.add_subparsers(dest='command', required=True)
+
+    create_parser = subparsers.add_parser('create', help='Create a new note')
+    create_parser.add_argument('title', type=str, help='Title of the note')
+    create_parser.add_argument('-t', '--tags', nargs='*', help='Tags for the note')
+    create_parser.add_argument('-c', '--content', type=str, help='Content of the note')
+
+    list_parser = subparsers.add_parser('list', help='List notes')
+    list_parser.add_argument('-t', '--tag', type=str, help='Filter notes by tag')
+
+    search_parser = subparsers.add_parser('search', help='Search notes by text')
+    search_parser.add_argument('query', type=str, help='Search query string')
+
+    add_tags_parser = subparsers.add_parser('add-tags', help='Add tags to a note')
+    add_tags_parser.add_argument('title', type=str, help='Title of the note')
+    add_tags_parser.add_argument('tags', nargs='+', help='Tags to add')
+
+    remove_tags_parser = subparsers.add_parser('remove-tags', help='Remove tags from a note')
+    remove_tags_parser.add_argument('title', type=str, help='Title of the note')
+    remove_tags_parser.add_argument('tags', nargs='+', help='Tags to remove')
+
+    args = parser.parse_args()
+
+    manager = NoteManager()
+
+    try:
+        if args.command == 'create':
+            path = manager.create_note(args.title, tags=args.tags, content=args.content)
+            print(f'Note created: {path}')
+
+        elif args.command == 'list':
+            notes = manager.list_notes(tag_filter=args.tag)
+            if notes:
+                print('\n'.join(notes))
+            else:
+                print('No notes found.')
+
+        elif args.command == 'search':
+            results = manager.search_notes(args.query)
+            if results:
+                print('\n'.join(results))
+            else:
+                print('No matching notes found.')
+
+        elif args.command == 'add-tags':
+            manager.add_tags(args.title, args.tags)
+            print(f'Tags added to note "{args.title}".')
+
+        elif args.command == 'remove-tags':
+            manager.remove_tags(args.title, args.tags)
+            print(f'Tags removed from note "{args.title}".')
+
+    except Exception as e:
+        print(f'Error: {e}', file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
